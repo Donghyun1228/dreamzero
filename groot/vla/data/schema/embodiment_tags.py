@@ -285,6 +285,11 @@ class EmbodimentTag(Enum):
     The sim BEHAVIOR Galaxea R1 Pro robot with grippers.
     """
 
+    UR10E = "ur10e"
+    """
+    The UR10e robot.
+    """
+
     # ------------- Deprecated G1 Embodiments -------------
     # below are deprecated G1 embodiments. Why deprecated?
     # 1. The neck wasn't locked. So the the camera angles differe slightly between episodes and robots

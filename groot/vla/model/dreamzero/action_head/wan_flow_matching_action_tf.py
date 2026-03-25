@@ -128,7 +128,7 @@ class WANPolicyHeadConfig(PretrainedConfig):
         default=None,
         metadata={"help": "Number of inference steps for noise diffusion."},
     )
-    max_num_embodiments: int = field(default=32, metadata={"help": "Number of embodiments."})
+    max_num_embodiments: int = field(default=33, metadata={"help": "Number of embodiments."})
     tune_projector: bool = field(default=True, metadata={"help": "Whether to tune the projector."})
     tune_diffusion_model: bool = field(
         default=True, metadata={"help": "Whether to tune the diffusion model."}
@@ -544,7 +544,7 @@ class WANPolicyHead(ActionHead):
         prompt_emb = self.text_encoder(input_ids, attention_mask)
         prompt_emb = prompt_emb.clone().to(dtype=torch.bfloat16)
         for i, v in enumerate(seq_lens):
-            prompt_emb[:, v:] = 0
+            prompt_emb[i, v:] = 0
         return prompt_emb
 
     def _ensure_vae_on_device(self, ref_tensor):

@@ -35,19 +35,19 @@ logger = logging.getLogger(__name__)
 class Args:
     port: int = 8000
     timeout_seconds: int = 50000  # 10 hours default, configurable
-    model_path: str = "./checkpoints/dreamzero"
+    model_path: str = "/home/user/donghyun/checkpoints/dreamzero_ur10e_lora/checkpoint-2000"
     enable_dit_cache: bool = False
     index: int = 0
     max_chunk_size: int | None = None  # If None, use config value. Otherwise override max_chunk_size for inference.
 
 
 class ARDroidRoboarenaPolicy:
-    """Wrapper policy that implements roboarena.policy.BasePolicy interface for AR_droid.
+    """Wrapper policy that implements roboarena.policy.BasePolicy interface for UR10e.
     
     Handles:
-    - Observation format conversion (roboarena -> AR_droid format)
-    - Frame accumulation across calls (roboarena sends single frames, AR_droid expects multi-frame video)
-    - Action format conversion (AR_droid dict -> roboarena array format)
+    - Observation normalization for DreamZero UR10e keys
+    - Frame handling across calls
+    - Action format conversion (DreamZero dict -> roboarena array format)
     - Distributed inference coordination
     """
     
@@ -66,9 +66,8 @@ class ARDroidRoboarenaPolicy:
         
         # Frame buffers for accumulation (per camera view)
         self._frame_buffers: dict[str, list[np.ndarray]] = {
-            "video.exterior_image_1_left": [],
-            "video.exterior_image_2_left": [],
-            "video.wrist_image_left": [],
+            "video.cam_third_person": [],
+            "video.cam_wrist": [],
         }
         self._call_count = 0
         self._is_first_call = True
@@ -85,125 +84,82 @@ class ARDroidRoboarenaPolicy:
             os.makedirs(self._output_dir, exist_ok=True)
     
     def _convert_observation(self, obs: dict) -> dict:
-        """Convert roboarena observation format to AR_droid format.
-        
-        Roboarena format:
-            - observation/exterior_image_0_left: (H, W, 3) single frame
-            - observation/exterior_image_1_left: (H, W, 3) single frame
-            - observation/wrist_image_left: (H, W, 3) single frame
-            - observation/joint_position: (7,)
-            - observation/gripper_position: (1,)
-            - prompt: str
-        
-        AR_droid format:
-            - video.exterior_image_1_left: (T, H, W, 3) multi-frame
-            - video.exterior_image_2_left: (T, H, W, 3) multi-frame
-            - video.wrist_image_left: (T, H, W, 3) multi-frame
-            - state.joint_position: (1, 7)
-            - state.gripper_position: (1, 1)
-            - annotation.language.action_text: str
-        """
+        """Normalize native DreamZero UR10e observation keys and shapes."""
         converted = {}
-        
-        # Map image keys (roboarena uses 0-indexed, AR_droid uses 1-indexed)
-        image_key_mapping = {
-            "observation/exterior_image_0_left": "video.exterior_image_1_left",
-            "observation/exterior_image_1_left": "video.exterior_image_2_left",
-            "observation/wrist_image_left": "video.wrist_image_left",
-        }
-        
-        # Accumulate frames for each camera view
-        for roboarena_key, droid_key in image_key_mapping.items():
-            if roboarena_key in obs:
-                data = obs[roboarena_key]
-                if isinstance(data, np.ndarray):
-                    if data.ndim == 4:
-                        # Multiple frames (T, H, W, 3)
-                        self._frame_buffers[droid_key].extend(list(data))
-                    else:
-                        # Single frame (H, W, 3)
-                        self._frame_buffers[droid_key].append(data)
 
-        # Determine how many frames to use
-        if self._is_first_call:
-            # First call: use only 1 frame
-            num_frames = 1
-        else:
-            # Subsequent calls: use exactly FRAMES_PER_CHUNK frames
-            num_frames = self.FRAMES_PER_CHUNK
-        
-        # Build video tensors from accumulated frames
-        for droid_key, buffer in self._frame_buffers.items():
+        for key in self._frame_buffers:
+            if key not in obs:
+                continue
+            data = np.asarray(obs[key])
+            if data.ndim == 4:
+                self._frame_buffers[key].extend(list(data))
+            elif data.ndim == 3:
+                self._frame_buffers[key].append(data)
+
+        num_frames = self.FRAMES_PER_CHUNK
+
+        for key, buffer in self._frame_buffers.items():
             if len(buffer) > 0:
                 if len(buffer) >= num_frames:
-                    # Take the last num_frames frames
                     frames_to_use = buffer[-num_frames:]
                 else:
-                    # Pad by repeating the first frame to reach num_frames
                     frames_to_use = buffer.copy()
                     while len(frames_to_use) < num_frames:
-                        # Prepend the first frame to pad
                         frames_to_use.insert(0, buffer[0])
-                # Stack to (T, H, W, C)
-                video = np.stack(frames_to_use, axis=0)
-                converted[droid_key] = video
-        
-        # Convert state observations
-        if "observation/joint_position" in obs:
-            joint_pos = obs["observation/joint_position"]
-            # Reshape to (1, 7) if needed
+                converted[key] = np.stack(frames_to_use, axis=0)
+
+        if "state.joint_pos" in obs:
+            joint_pos = np.asarray(obs["state.joint_pos"])
             if joint_pos.ndim == 1:
                 joint_pos = joint_pos.reshape(1, -1)
-            converted["state.joint_position"] = joint_pos.astype(np.float64)
+            converted["state.joint_pos"] = joint_pos.astype(np.float64)
         else:
-            converted["state.joint_position"] = np.zeros((1, 7), dtype=np.float64)
-        
-        if "observation/gripper_position" in obs:
-            gripper_pos = obs["observation/gripper_position"]
-            # Reshape to (1, 1) if needed
+            converted["state.joint_pos"] = np.zeros((1, 6), dtype=np.float64)
+
+        if "state.gripper_pos" in obs:
+            gripper_pos = np.asarray(obs["state.gripper_pos"])
             if gripper_pos.ndim == 1:
                 gripper_pos = gripper_pos.reshape(1, -1)
-            converted["state.gripper_position"] = gripper_pos.astype(np.float64)
+            converted["state.gripper_pos"] = gripper_pos.astype(np.float64)
         else:
-            converted["state.gripper_position"] = np.zeros((1, 1), dtype=np.float64)
-        
-        # Convert prompt
-        if "prompt" in obs:
-            converted["annotation.language.action_text"] = obs["prompt"]
+            converted["state.gripper_pos"] = np.zeros((1, 1), dtype=np.float64)
+
+        if "annotation.task" in obs:
+            converted["annotation.task"] = obs["annotation.task"]
         else:
-            converted["annotation.language.action_text"] = ""
-        
+            converted["annotation.task"] = ""
+
         return converted
     
     def _convert_action(self, action_dict: dict) -> np.ndarray:
-        """Convert AR_droid action dict to roboarena action array.
+        """Convert DreamZero UR10e action dict to roboarena action array.
         
-        AR_droid format:
-            - action.joint_position: (N, 7)
-            - action.gripper_position: (N,) or (N, 1)
+        DreamZero UR10e format:
+            - action.joint_pos: (N, 6)
+            - action.gripper_pos: (N,) or (N, 1)
         
         Roboarena format:
-            - action: (N, 8) - 7 joint positions + 1 gripper
+            - action: (N, 7) - 6 joint positions + 1 gripper
         """
         joint_action = None
         gripper_action = None
         
         # Extract actions from dict
         for key, value in action_dict.items():
-            if "joint_position" in key:
+            if ("joint_position" in key or "joint_pos" in key) and "gripper" not in key:
                 joint_action = value
-            elif "gripper_position" in key or "gripper" in key:
+            elif "gripper_position" in key or "gripper_pos" in key or "gripper" in key:
                 gripper_action = value
         
         if joint_action is None:
             # Fallback: return zeros
-            return np.zeros((1, 8), dtype=np.float32)
+            return np.zeros((1, 7), dtype=np.float32)
         
         # Convert to numpy if tensor
         if isinstance(joint_action, torch.Tensor):
             joint_action = joint_action.cpu().numpy()
         
-        # Ensure 2D shape (N, 7)
+        # Ensure 2D shape (N, D)
         if joint_action.ndim == 1:
             joint_action = joint_action.reshape(1, -1)
         
@@ -221,7 +177,7 @@ class ARDroidRoboarenaPolicy:
         else:
             gripper_action = np.zeros((N, 1), dtype=np.float32)
         
-        # Concatenate: (N, 7) + (N, 1) -> (N, 8)
+        # Concatenate: (N, D) + (N, 1) -> (N, D+1)
         action = np.concatenate([joint_action, gripper_action], axis=-1).astype(np.float32)
         
         return action
@@ -249,7 +205,7 @@ class ARDroidRoboarenaPolicy:
             obs: Observation dict in roboarena format
             
         Returns:
-            action: (N, 8) action array
+            action: (N, 7) action array
         """
         # Check for session change - reset state if new session
         session_id = obs.get("session_id", None)
@@ -404,7 +360,7 @@ class WebsocketPolicyServer:
         except Exception:
             return
 
-        for key in ("video.exterior_image_1_left", "video.exterior_image_2_left", "video.wrist_image_left"):
+        for key in ("video.cam_third_person", "video.cam_wrist"):
             if key not in obs:
                 continue
             value = obs[key]
@@ -748,7 +704,7 @@ def main(args: Args) -> None:
     # to autoregressive nature of the model (several possible shapes).
     torch._dynamo.config.recompile_limit = 800
 
-    embodiment_tag = "oxe_droid"
+    embodiment_tag = "ur10e"
     model_path = args.model_path
     policy_metadata = {
         "embodiment": embodiment_tag,
@@ -788,18 +744,18 @@ def main(args: Args) -> None:
         output_dir = None
         logging.info(f"Rank {rank} starting as worker for distributed inference...")
     
-    # Create wrapper policy that converts between roboarena and AR_droid formats
+    # Create wrapper policy that converts between roboarena and DreamZero UR10e formats
     wrapper_policy = ARDroidRoboarenaPolicy(
         groot_policy=policy,
         signal_group=signal_group,
         output_dir=output_dir,
     )
     
-    # Configure server for AR_droid (2 external cameras, wrist camera, joint position actions)
+    # Configure server for UR10e (1 third-person camera, 1 wrist camera, joint position actions)
     server_config = PolicyServerConfig(
-        image_resolution=(180, 320),  # AR_droid expects 180x320 images
+        image_resolution=(256, 480),  # Matches the UR10e resize config in base_48_wan_fine_aug_relative.yaml
         needs_wrist_camera=True,
-        n_external_cameras=2,
+        n_external_cameras=1,
         needs_stereo_camera=False,
         needs_session_id=True,  # Track session to reset state for new clients
         action_space="joint_position",

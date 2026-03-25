@@ -887,7 +887,8 @@ class CausalWanSelfAttention(nn.Module):
                     # Noisy half contains image + action + state tokens
                     noisy_image_seq_len = half_seq_len
                     noisy_frames = noisy_image_seq_len // self.frame_seqlen
-                    num_image_blocks = (noisy_frames - 1) // self.num_frame_per_block
+                    # noisy_frames already excludes the first conditioning latent frame.
+                    num_image_blocks = noisy_frames // self.num_frame_per_block
                     action_horizon = num_image_blocks * self.num_action_per_block
                     state_horizon = num_image_blocks * self.num_state_per_block
                     
@@ -898,7 +899,7 @@ class CausalWanSelfAttention(nn.Module):
                             "For 5B use 320x176 (e.g. data=dreamzero/droid_relative_wan22 or image_resolution_width=320, image_resolution_height=176). "
                             f"Got noisy_frames={noisy_frames}, num_image_blocks={num_image_blocks}, "
                             f"action_register_length={action_register_length}. "
-                            "Ensure (noisy_frames - 1) // num_frame_per_block >= 1 and register length equals "
+                            "Ensure noisy_frames // num_frame_per_block >= 1 and register length equals "
                             "num_blocks * (num_action_per_block + num_state_per_block)."
                         )
                     
@@ -1285,7 +1286,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                  action_dim=32,
                  num_registers=8,
                  max_state_dim=64,
-                 max_num_embodiments=32,
+                 max_num_embodiments=33,
                  hidden_size=1024,
                  diffusion_model_pretrained_path=None,
                  num_action_per_block=32,
@@ -1838,7 +1839,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
 
 
-        frame_seqlen = 880
+        frame_seqlen = 784
         seq_len = 2*frame_seqlen 
         kv_cache_seq_len = kv_cache_packed.shape[3]
         current_start_frame =  kv_cache_seq_len // frame_seqlen

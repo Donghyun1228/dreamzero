@@ -137,7 +137,6 @@ class DreamZeroJointPosClient(InferenceClient):
 
 
 
-
 def main(
         episodes: int = 10,
         scene: int = 1,

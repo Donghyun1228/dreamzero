@@ -340,7 +340,79 @@ transform_yam:
 
     # Model-specific transform
     - ${model_specific_transform}
+    
 
+################################################################################
+# UR10e
+################################################################################
+
+modality_config_ur10e:
+  video:
+    _target_: groot.vla.data.dataset.ModalityConfig
+    delta_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+    eval_delta_indices: [0]
+    modality_keys:                        # one entry per camera, matching modality.json
+      - video.cam_third_person
+      - video.cam_wrist
+  state:
+    _target_: groot.vla.data.dataset.ModalityConfig
+    delta_indices: [0]
+    modality_keys:                        # matching modality.json state keys
+      - state.joint_pos
+      - state.gripper_pos
+  action:
+    _target_: groot.vla.data.dataset.ModalityConfig
+    delta_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+    modality_keys:                        # matching modality.json action keys
+      - action.joint_pos
+      - action.gripper_pos
+  language:
+    _target_: groot.vla.data.dataset.ModalityConfig
+    delta_indices: [0]
+    modality_keys:
+      - annotation.task
+
+transform_ur10e:
+  _target_: groot.vla.data.transform.ComposedModalityTransform
+  transforms:
+    # Video
+    - <<: *totensor_cfg
+      apply_to: ${modality_config_ur10e.video.modality_keys}
+    - <<: *crop_cfg
+      apply_to: ${modality_config_ur10e.video.modality_keys}
+    - <<: *resize_cfg
+      apply_to: ${modality_config_ur10e.video.modality_keys}
+    - <<: *color_jitter_cfg
+      apply_to: ${modality_config_ur10e.video.modality_keys}
+    - <<: *to_numpy_cfg
+      apply_to: ${modality_config_ur10e.video.modality_keys}
+
+    # State
+    - _target_: groot.vla.data.transform.StateActionToTensor
+      apply_to: ${modality_config_ur10e.state.modality_keys}
+    - _target_: groot.vla.data.transform.StateActionTransform
+      apply_to: ${modality_config_ur10e.state.modality_keys}
+      normalization_modes:
+        state.joint_pos: q99              # every state key needs a normalization mode
+        state.gripper_pos: q99
+
+    # Action
+    - _target_: groot.vla.data.transform.StateActionToTensor
+      apply_to: ${modality_config_ur10e.action.modality_keys}
+    - _target_: groot.vla.data.transform.StateActionTransform
+      apply_to: ${modality_config_ur10e.action.modality_keys}
+      normalization_modes:
+        action.joint_pos: q99             # every action key needs a normalization mode
+        action.gripper_pos: q99
+
+    # Concat
+    - _target_: groot.vla.data.transform.ConcatTransform
+      video_concat_order: ${modality_config_ur10e.video.modality_keys}
+      state_concat_order: ${modality_config_ur10e.state.modality_keys}
+      action_concat_order: ${modality_config_ur10e.action.modality_keys}
+
+    # Model-specific (required, don't change)
+    - ${model_specific_transform}
 
 ################################################################################
 # Modality Configs
@@ -350,6 +422,7 @@ modality_configs:
   oxe_droid: ${modality_config_oxe_droid}
   agibot: ${modality_config_agibot}
   yam: ${modality_config_yam}
+  ur10e: ${modality_config_ur10e}
 
 ################################################################################
 # Transforms
@@ -359,7 +432,7 @@ transforms:
   oxe_droid: ${transform_oxe_droid}
   agibot: ${transform_agibot}
   yam: ${transform_yam}
-
+  ur10e: ${transform_ur10e}
 ################################################################################
 # Metadata Versions
 ################################################################################
@@ -368,10 +441,11 @@ metadata_versions:
   oxe_droid: '0221'
   agibot: '0221'
   yam: '0221'
-
+  ur10e: '0221'
 ################################################################################
 # FPS (per embodiment, null means use dataset default)
 ################################################################################
 
 fps:
   yam: 30
+  ur10e: 30
